@@ -1,0 +1,8 @@
+{
+  "name": "Platinium Research",
+  "description": "An advanced AI-powered research assistant and writing tool featuring deep reasoning, web grounding, real-time voice brainstorming, and image analysis.",
+  "requestFramePermissions": [
+    "microphone",
+    "camera"
+  ]
+}
