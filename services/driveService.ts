@@ -27,12 +27,20 @@ async function driveFetch(url: string, options: RequestInit = {}) {
     Authorization: `Bearer ${token}`,
   };
 
-  const response = await fetch(url, { ...options, headers });
-  if (!response.ok) {
-    if (response.status === 401) throw new Error("TOKEN_EXPIRED");
-    throw new Error(`Drive API Error: ${response.statusText}`);
+  try {
+    const response = await fetch(url, { ...options, headers });
+    if (!response.ok) {
+        if (response.status === 401) throw new Error("TOKEN_EXPIRED");
+        throw new Error(`Drive API Error: ${response.statusText} (${response.status})`);
+    }
+    return response;
+  } catch (error: any) {
+      if (error.message === 'TOKEN_EXPIRED') throw error;
+      if (error.message === 'Failed to fetch') {
+          throw new Error("Network Error: Could not connect to Google Drive. Check internet connection.");
+      }
+      throw error;
   }
-  return response;
 }
 
 async function uploadFile(name: string, mimeType: string, parentId: string, contentBlob: Blob) {
