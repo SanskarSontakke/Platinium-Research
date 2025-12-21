@@ -29,7 +29,7 @@ export const performWebSearch = async (query: string) => {
   return retryOperation(async () => {
     const ai = getAiClient();
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3-flash-preview",
       contents: { parts: [{ text: query }] },
       config: { tools: [{ googleSearch: {} }] },
     });
@@ -55,9 +55,9 @@ export const performDeepReasoning = async (problem: string) => {
 export const analyzeImage = async (base64: string, mime: string, prompt: string) => {
   return retryOperation(async () => {
     const ai = getAiClient();
-    // gemini-2.5-flash is highly capable for multimodal tasks
+    // Use the recommended gemini-3-flash-preview for multimodal tasks
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3-flash-preview',
       contents: {
         parts: [
           { inlineData: { data: base64, mimeType: mime } }, 
@@ -159,7 +159,7 @@ export const refinePrompt = async (originalPrompt: string) => {
   return retryOperation(async () => {
     const ai = getAiClient();
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3-flash-preview",
       config: {
         systemInstruction: `Refine this prompt for clarity and intent preservation.`,
       },
@@ -173,7 +173,7 @@ export const generateCitations = async (text: string, sources: string[], style: 
   return retryOperation(async () => {
     const ai = getAiClient();
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3-flash-preview",
       contents: { parts: [{ text: `
         Task: Add inline citations [Author, Year].
         Sources:

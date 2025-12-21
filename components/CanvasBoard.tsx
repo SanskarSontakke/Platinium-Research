@@ -5,385 +5,461 @@ import {
   Move, Minus, Plus, Maximize, Lock, Unlock, GripHorizontal, Box, X, 
   Palette, Edit3, Type, FileText, Link as LinkIcon, MousePointer2, 
   Trash2, Lightbulb, Settings2, StickyNote, Paperclip, Image as ImageIcon,
-  ArrowRight, Layout as LayoutIcon, RefreshCw, Zap, Upload
+  ArrowRight, Layout as LayoutIcon, RefreshCw, Zap, Upload, ZoomIn, ZoomOut, MousePointerSquareDashed,
+  Undo, Redo, Hexagon
 } from 'lucide-react';
 
 interface CanvasBoardProps {
   data: CanvasData;
   onUpdate: (newData: CanvasData) => void;
-  onAttachFiles?: (nodeId: string) => void; // Kept for backward compatibility or future use
+  onAttachFiles?: (nodeId: string) => void; 
   readOnly?: boolean;
 }
 
-const GRID_SIZE = 20;
-const NODE_WIDTH = 240; // Widened slightly for better image display
+const GRID_SIZE = 25;
+const NODE_WIDTH = 240; 
 const NODE_HEIGHT = 160;
+const ZOOM_SENSITIVITY = 0.001;
+const MIN_ZOOM = 0.1;
+const MAX_ZOOM = 3.0;
 
-const NODE_CONFIG: Record<string, { icon: any, color: string, label: string }> = {
-  concept: { icon: Lightbulb, color: '#06b6d4', label: 'Concept' },
-  process: { icon: Settings2, color: '#a855f7', label: 'Process' }, 
-  note: { icon: StickyNote, color: '#eab308', label: 'Note' },  
+const NODE_CONFIG: Record<CanvasNode['type'], { 
+  icon: any, 
+  color: string, 
+  secondaryColor: string, 
+  label: string,
+  shapeClass: string,
+  iconSize: string
+}> = {
+  concept: { 
+    icon: Lightbulb, 
+    color: '#22d3ee', 
+    secondaryColor: 'rgba(6, 182, 212, 0.15)', 
+    label: 'Concept',
+    shapeClass: 'rounded-full',
+    iconSize: 'w-4 h-4'
+  },
+  process: { 
+    icon: Settings2, 
+    color: '#c084fc', 
+    secondaryColor: 'rgba(168, 85, 247, 0.15)', 
+    label: 'Process',
+    shapeClass: 'rounded-lg rotate-45',
+    iconSize: 'w-4 h-4 -rotate-45'
+  }, 
+  note: { 
+    icon: StickyNote, 
+    color: '#fbbf24', 
+    secondaryColor: 'rgba(234, 179, 8, 0.15)', 
+    label: 'Note',
+    shapeClass: 'rounded-md',
+    iconSize: 'w-4 h-4'
+  },  
 };
 
 export const CanvasBoard: React.FC<CanvasBoardProps> = ({ data, onUpdate, onAttachFiles, readOnly = false }) => {
-  // View State
-  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [localNodes, setLocalNodes] = useState<CanvasNode[]>(data.nodes);
+  const [offset, setOffset] = useState({ x: 50, y: 50 });
   const [zoom, setZoom] = useState(1);
   const [mode, setMode] = useState<'select' | 'connect'>('select');
-  
-  // Interaction State
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [editingNode, setEditingNode] = useState<CanvasNode | null>(null);
+  const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
   const [connectingSourceId, setConnectingSourceId] = useState<string | null>(null);
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
-
-  // Attachment State
-  const [attachingNodeId, setAttachingNodeId] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const canvasRef = useRef<HTMLDivElement>(null);
+  
+  const containerRef = useRef<HTMLDivElement>(null);
   const isDraggingCanvas = useRef(false);
   const dragStart = useRef({ x: 0, y: 0 });
   const draggingNodeId = useRef<string | null>(null);
   const initialNodePos = useRef({ x: 0, y: 0 });
 
-  // --- Helpers ---
+  const [history, setHistory] = useState<CanvasData[]>([data]);
+  const [historyIndex, setHistoryIndex] = useState(0);
+  const isInternalAction = useRef(false);
 
-  const screenToWorld = (screenX: number, screenY: number) => {
-    if (!canvasRef.current) return { x: 0, y: 0 };
-    const rect = canvasRef.current.getBoundingClientRect();
+  useEffect(() => {
+    if (!draggingNodeId.current) setLocalNodes(data.nodes);
+
+    if (isInternalAction.current) {
+        isInternalAction.current = false;
+        return;
+    }
+
+    const currentStored = history[historyIndex];
+    if (JSON.stringify(currentStored) !== JSON.stringify(data)) {
+        const newHistory = history.slice(0, historyIndex + 1);
+        newHistory.push(data);
+        if (newHistory.length > 50) newHistory.shift();
+        setHistory(newHistory);
+        setHistoryIndex(newHistory.length - 1);
+    }
+  }, [data]);
+
+  const undo = useCallback(() => {
+    if (historyIndex > 0) {
+      isInternalAction.current = true;
+      const prevState = history[historyIndex - 1];
+      setHistoryIndex(historyIndex - 1);
+      onUpdate(prevState);
+      setSelectedId(null);
+      setEditingNodeId(null);
+    }
+  }, [history, historyIndex, onUpdate]);
+
+  const redo = useCallback(() => {
+    if (historyIndex < history.length - 1) {
+      isInternalAction.current = true;
+      const nextState = history[historyIndex + 1];
+      setHistoryIndex(historyIndex + 1);
+      onUpdate(nextState);
+    }
+  }, [history, historyIndex, onUpdate]);
+
+  const screenToWorld = useCallback((screenX: number, screenY: number) => {
+    if (!containerRef.current) return { x: 0, y: 0 };
+    const rect = containerRef.current.getBoundingClientRect();
     return {
       x: (screenX - rect.left - offset.x) / zoom,
       y: (screenY - rect.top - offset.y) / zoom
     };
+  }, [offset, zoom]);
+
+  const handleZoom = useCallback((delta: number, centerX?: number, centerY?: number) => {
+    setZoom(prevZoom => {
+      const newZoom = Math.min(Math.max(prevZoom * (1 + delta), MIN_ZOOM), MAX_ZOOM);
+      
+      if (centerX !== undefined && centerY !== undefined && containerRef.current) {
+        const rect = containerRef.current.getBoundingClientRect();
+        const mouseX = centerX - rect.left;
+        const mouseY = centerY - rect.top;
+
+        const worldX = (mouseX - offset.x) / prevZoom;
+        const worldY = (mouseY - offset.y) / prevZoom;
+
+        const newOffsetX = mouseX - worldX * newZoom;
+        const newOffsetY = mouseY - worldY * newZoom;
+        
+        setOffset({ x: newOffsetX, y: newOffsetY });
+      }
+      
+      return newZoom;
+    });
+  }, [offset]);
+
+  const resetView = useCallback(() => {
+    setOffset({ x: 100, y: 100 });
+    setZoom(1);
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+
+      if ((e.metaKey || e.ctrlKey) && e.key === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) redo(); else undo();
+      } else if ((e.metaKey || e.ctrlKey) && e.key === 'y') {
+        e.preventDefault();
+        redo();
+      } else if (e.key === '+' || e.key === '=') {
+        handleZoom(0.1);
+      } else if (e.key === '-') {
+        handleZoom(-0.1);
+      } else if (e.key === '0') {
+        resetView();
+      } else if (e.key === 'Escape') {
+        setMode('select');
+        setConnectingSourceId(null);
+        setSelectedId(null);
+        setEditingNodeId(null);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleZoom, resetView, undo, redo]);
+
+  const handleWheel = (e: React.WheelEvent) => {
+    if (e.ctrlKey) {
+      const delta = -e.deltaY * ZOOM_SENSITIVITY;
+      handleZoom(delta, e.clientX, e.clientY);
+    } else {
+      setOffset(prev => ({
+        x: prev.x - e.deltaX,
+        y: prev.y - e.deltaY
+      }));
+    }
   };
 
-  const generateId = () => Math.random().toString(36).substr(2, 9);
+  const generateId = () => Math.random().toString(36).substring(2, 9);
 
-  // --- Actions ---
-
-  const addNode = (type: 'concept' | 'process' | 'note') => {
+  const addNode = (type: keyof typeof NODE_CONFIG) => {
       if (readOnly) return;
-      // Center of screen
-      const center = screenToWorld(
-          canvasRef.current ? canvasRef.current.getBoundingClientRect().width / 2 : 0,
-          canvasRef.current ? canvasRef.current.getBoundingClientRect().height / 2 : 0
-      );
-      
+      const worldPos = screenToWorld(window.innerWidth / 2, window.innerHeight / 2);
       const newNode: CanvasNode = {
           id: generateId(),
           type,
           label: `New ${NODE_CONFIG[type].label}`,
           content: '',
-          x: center.x - NODE_WIDTH/2,
-          y: center.y - NODE_HEIGHT/2,
+          x: worldPos.x - NODE_WIDTH / 2,
+          y: worldPos.y - NODE_HEIGHT / 2,
           color: NODE_CONFIG[type].color
       };
-
-      onUpdate({
-          ...data,
-          nodes: [...data.nodes, newNode]
-      });
+      const newNodes = [...localNodes, newNode];
+      onUpdate({ ...data, nodes: newNodes });
       setSelectedId(newNode.id);
+      setEditingNodeId(newNode.id);
   };
 
   const deleteSelected = () => {
-      if (readOnly || !selectedId) return;
-      onUpdate({
-          nodes: data.nodes.filter(n => n.id !== selectedId),
-          edges: data.edges.filter(e => e.id !== selectedId && e.from !== selectedId && e.to !== selectedId)
-      });
-      setSelectedId(null);
-      setEditingNode(null);
-  };
-
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file && attachingNodeId) {
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        const result = ev.target?.result as string;
-        const [mimePart, dataPart] = result.split(',');
-        const mime = mimePart.split(':')[1].split(';')[0];
-        
-        const newAttachment: Attachment = {
-          id: `node_img_${Date.now()}`,
-          type: 'image',
-          mime,
-          name: file.name,
-          data: dataPart
-        };
-
-        const newNodes = data.nodes.map(n => {
-          if (n.id === attachingNodeId) {
-             return { ...n, attachments: [...(n.attachments || []), newAttachment] };
-          }
-          return n;
-        });
-        
-        onUpdate({ ...data, nodes: newNodes });
-      };
-      reader.readAsDataURL(file);
-    }
-    setAttachingNodeId(null);
-    if (fileInputRef.current) fileInputRef.current.value = '';
-  };
-
-  const removeAttachment = (nodeId: string, attId: string) => {
-      if (readOnly) return;
-      const newNodes = data.nodes.map(n => {
-          if (n.id === nodeId) {
-              return { ...n, attachments: n.attachments?.filter(a => a.id !== attId) };
-          }
-          return n;
-      });
-      onUpdate({ ...data, nodes: newNodes });
+    if (readOnly || !selectedId) return;
+    const newNodes = localNodes.filter(n => n.id !== selectedId);
+    const newEdges = data.edges.filter(e => e.id !== selectedId && e.from !== selectedId && e.to !== selectedId);
+    onUpdate({ nodes: newNodes, edges: newEdges });
+    setSelectedId(null);
+    setEditingNodeId(null);
   };
 
   const runAutoLayout = () => {
-      if (data.nodes.length === 0) return;
+      if (localNodes.length === 0) return;
       
-      const nodes = [...data.nodes];
+      const nodes = [...localNodes];
       const edges = data.edges;
-      
-      // 1. Build Graph Structure
-      const adj: Record<string, string[]> = {};
-      const parents: Record<string, string[]> = {};
-      const inDegree: Record<string, number> = {};
-
-      nodes.forEach(n => { 
-          adj[n.id] = []; 
-          parents[n.id] = [];
-          inDegree[n.id] = 0;
-      });
-      
-      edges.forEach(e => {
-          if (adj[e.from]) adj[e.from].push(e.to);
-          if (parents[e.to]) {
-              parents[e.to].push(e.from);
-              inDegree[e.to]++;
-          }
-      });
-
-      // 2. Assign Ranks (Longest Path Layering)
       const ranks: Record<string, number> = {};
-      const queue = nodes.filter(n => inDegree[n.id] === 0).map(n => n.id);
-      
-      if (queue.length === 0 && nodes.length > 0) queue.push(nodes[0].id);
+      const layerCounts: Record<number, number> = {};
+      const totalInRank: Record<number, number> = {};
 
-      queue.forEach(id => ranks[id] = 0);
+      nodes.forEach(n => ranks[n.id] = 0);
 
-      let head = 0;
-      while(head < queue.length) {
-          const u = queue[head++];
-          const neighbors = adj[u] || [];
-          
-          neighbors.forEach(v => {
-              ranks[v] = Math.max(ranks[v] || 0, (ranks[u] || 0) + 1);
-              inDegree[v]--;
-              if (inDegree[v] === 0) queue.push(v);
+      for (let i = 0; i < Math.min(nodes.length, 30); i++) {
+          edges.forEach(e => {
+              if (ranks[e.to] <= ranks[e.from]) {
+                  ranks[e.to] = ranks[e.from] + 1;
+              }
           });
       }
 
       nodes.forEach(n => {
-          if (ranks[n.id] === undefined) ranks[n.id] = 0;
-      });
-
-      // 3. Group Nodes by Rank
-      const maxRank = Math.max(...Object.values(ranks));
-      const layers: string[][] = Array.from({ length: maxRank + 1 }, () => []);
-      
-      nodes.forEach(n => {
           const r = ranks[n.id];
-          layers[r].push(n.id);
+          totalInRank[r] = (totalInRank[r] || 0) + 1;
       });
 
-      // 4. Calculate Coordinates
-      const X_SPACING = 350; 
-      const Y_SPACING = 250; // Increased spacing for nodes with images
+      const HORIZONTAL_GAP = 700;
+      const VERTICAL_GAP = 450;
 
       const newNodes = nodes.map(n => {
           const r = ranks[n.id];
-          const layer = layers[r];
-          const idx = layer.indexOf(n.id);
-          
-          const layerHeight = layer.length * Y_SPACING;
-          const yOffset = -(layerHeight / 2);
-
-          return {
-              ...n,
-              x: (r * X_SPACING),
-              y: yOffset + (idx * Y_SPACING)
-          };
+          const indexInRank = layerCounts[r] || 0;
+          layerCounts[r] = indexInRank + 1;
+          const yOffset = (indexInRank - (totalInRank[r] - 1) / 2) * VERTICAL_GAP;
+          return { ...n, x: r * HORIZONTAL_GAP, y: yOffset };
       });
 
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      newNodes.forEach(n => {
+          minX = Math.min(minX, n.x);
+          maxX = Math.max(maxX, n.x + NODE_WIDTH);
+          minY = Math.min(minY, n.y);
+          maxY = Math.max(maxY, n.y + NODE_HEIGHT);
+      });
+
+      const graphWidth = maxX - minX;
+      const graphHeight = maxY - minY;
+      const containerWidth = containerRef.current?.clientWidth || window.innerWidth;
+      const containerHeight = containerRef.current?.clientHeight || window.innerHeight;
+
+      const targetZoom = Math.min(
+          Math.max((containerWidth - 200) / graphWidth, MIN_ZOOM),
+          Math.max((containerHeight - 200) / graphHeight, MIN_ZOOM),
+          0.7
+      );
+
+      const centerX = (containerWidth / 2) - ((minX + graphWidth / 2) * targetZoom);
+      const centerY = (containerHeight / 2) - ((minY + graphHeight / 2) * targetZoom);
+
       onUpdate({ ...data, nodes: newNodes });
-      
-      if (canvasRef.current) {
-          const rect = canvasRef.current.getBoundingClientRect();
-          setOffset({ x: rect.width / 4, y: rect.height / 2 });
-          setZoom(0.8);
-      }
+      setZoom(targetZoom);
+      setOffset({ x: centerX, y: centerY });
   };
 
-  const handleNodeClick = (e: React.MouseEvent, nodeId: string) => {
-      e.stopPropagation();
-      
-      if (mode === 'connect') {
-          if (connectingSourceId === null) {
-              setConnectingSourceId(nodeId);
-          } else {
-              if (connectingSourceId !== nodeId) {
-                  const newEdge: CanvasEdge = {
-                      id: generateId(),
-                      from: connectingSourceId,
-                      to: nodeId,
-                      color: '#71717a'
-                  };
-                  onUpdate({ ...data, edges: [...data.edges, newEdge] });
-              }
-              setConnectingSourceId(null);
-              setMode('select');
-          }
-      } else {
-          setSelectedId(nodeId);
-          setConnectingSourceId(null);
-      }
+  const startConnection = (e: React.MouseEvent, nodeId: string) => {
+    if (readOnly) return;
+    e.stopPropagation();
+    setConnectingSourceId(nodeId);
+    setMousePos(screenToWorld(e.clientX, e.clientY));
   };
 
   const getPath = (x1: number, y1: number, x2: number, y2: number) => {
     const dist = Math.abs(x2 - x1);
-    const controlDist = Math.max(dist * 0.5, 100); 
+    const controlDist = Math.max(dist * 0.5, 120); 
     return `M ${x1} ${y1} C ${x1 + controlDist} ${y1}, ${x2 - controlDist} ${y2}, ${x2} ${y2}`;
   };
 
-  return (
-    <div className="relative w-full h-full bg-[#050505] overflow-hidden select-none group">
-      {/* Hidden File Input for Images */}
-      <input 
-        type="file" 
-        ref={fileInputRef} 
-        className="hidden" 
-        accept="image/*"
-        onChange={handleFileUpload}
-      />
+  const activeNode = localNodes.find(n => n.id === editingNodeId);
 
-      {/* Background Grid */}
+  return (
+    <div 
+      ref={containerRef}
+      className="relative w-full h-full bg-[#050505] overflow-hidden select-none group font-sans outline-none"
+      onWheel={handleWheel}
+      tabIndex={0}
+      style={{ containerType: 'inline-size' } as any}
+    >
       <div 
-        className="absolute inset-0 pointer-events-none opacity-20"
+        className="absolute inset-0 pointer-events-none transition-all duration-75"
         style={{
-          backgroundImage: `radial-gradient(#333 1px, transparent 1px)`,
+          backgroundImage: `radial-gradient(circle at 1px 1px, #1e1e1e 1px, transparent 0)`,
           backgroundSize: `${GRID_SIZE * zoom}px ${GRID_SIZE * zoom}px`,
           backgroundPosition: `${offset.x}px ${offset.y}px`
         }}
       />
 
-      {/* Canvas Area */}
+      <div className="absolute top-8 left-8 z-50 flex flex-col p-1.5 bg-[#0c0c0e]/95 backdrop-blur-2xl border border-white/10 rounded-2xl shadow-[0_20px_60px_rgba(0,0,0,0.6)] animate-fade-in-up no-scrollbar shrink-0">
+          <div className="flex flex-col items-center gap-1.5 p-1.5 border-b border-white/10 shrink-0">
+              <ToolbarButton icon={Lightbulb} label="Concept" onClick={() => addNode('concept')} color="text-cyan-400" />
+              <ToolbarButton icon={Settings2} label="Process" onClick={() => addNode('process')} color="text-purple-400" />
+              <ToolbarButton icon={StickyNote} label="Note" onClick={() => addNode('note')} color="text-amber-400" />
+          </div>
+          
+          <div className="flex flex-col items-center gap-1.5 p-1.5 border-b border-white/10 shrink-0">
+              <ToolbarButton 
+                  icon={ArrowRight} 
+                  label="Connect" 
+                  onClick={() => setMode(mode === 'connect' ? 'select' : 'connect')} 
+                  active={mode === 'connect'}
+                  color="text-zinc-300"
+              />
+              <ToolbarButton icon={LayoutIcon} label="Auto Layout" onClick={runAutoLayout} color="text-zinc-300" />
+              <ToolbarButton icon={Undo} label="Undo" onClick={undo} disabled={historyIndex <= 0} color="text-zinc-300" />
+              <ToolbarButton icon={Redo} label="Redo" onClick={redo} disabled={historyIndex >= history.length - 1} color="text-zinc-300" />
+          </div>
+          
+          <div className="flex flex-col items-center gap-1.5 p-1.5 shrink-0">
+              <ToolbarButton icon={RefreshCw} label="Reset View" onClick={resetView} color="text-zinc-300" />
+              <ToolbarButton icon={Trash2} label="Delete Selected" onClick={deleteSelected} disabled={!selectedId} color="text-red-500" />
+          </div>
+      </div>
+
+      <div className="absolute bottom-8 left-8 z-50 flex flex-col gap-2 p-1.5 bg-[#09090b]/90 backdrop-blur-xl border border-white/5 rounded-xl shadow-2xl">
+          <button onClick={() => handleZoom(0.1)} className="p-2 hover:bg-zinc-800 rounded-lg transition-all active:scale-90 text-zinc-400 hover:text-white" title="Zoom In (+)"><ZoomIn className="w-5 h-5"/></button>
+          <div className="h-px bg-zinc-800/50 mx-1.5" />
+          <button onClick={() => handleZoom(-0.1)} className="p-2 hover:bg-zinc-800 rounded-lg transition-all active:scale-90 text-zinc-400 hover:text-white" title="Zoom Out (-)"><ZoomOut className="w-5 h-5"/></button>
+      </div>
+
       <div 
-        ref={canvasRef}
         className="w-full h-full outline-none"
-        style={{ cursor: isDraggingCanvas.current ? 'grabbing' : mode === 'connect' ? 'crosshair' : 'default' }}
+        style={{ cursor: isDraggingCanvas.current ? 'grabbing' : connectingSourceId ? 'crosshair' : 'grab' }}
         onMouseDown={(e) => {
             if ((e.target as HTMLElement).closest('.interactive')) return;
             isDraggingCanvas.current = true;
             dragStart.current = { x: e.clientX - offset.x, y: e.clientY - offset.y };
             setSelectedId(null);
-            if(mode === 'connect' && connectingSourceId) {
-                setConnectingSourceId(null); 
-            }
+            setEditingNodeId(null);
         }}
         onMouseMove={(e) => {
             if (isDraggingCanvas.current) {
                 setOffset({ x: e.clientX - dragStart.current.x, y: e.clientY - dragStart.current.y });
-            } else if (draggingNodeId.current && !readOnly) {
+                return;
+            } 
+            if (draggingNodeId.current && !readOnly) {
                  const deltaX = (e.clientX - dragStart.current.x) / zoom;
                  const deltaY = (e.clientY - dragStart.current.y) / zoom;
-                 const newNodes = data.nodes.map(n => n.id === draggingNodeId.current ? { ...n, x: initialNodePos.current.x + deltaX, y: initialNodePos.current.y + deltaY } : n);
-                 onUpdate({ ...data, nodes: newNodes });
+                 setLocalNodes(prev => prev.map(n => n.id === draggingNodeId.current 
+                    ? { ...n, x: initialNodePos.current.x + deltaX, y: initialNodePos.current.y + deltaY } 
+                    : n));
+                 return;
             }
-            if (mode === 'connect') {
-                const worldPos = screenToWorld(e.clientX, e.clientY);
-                setMousePos(worldPos);
-            }
+            if (connectingSourceId) setMousePos(screenToWorld(e.clientX, e.clientY));
         }}
-        onMouseUp={() => { isDraggingCanvas.current = false; draggingNodeId.current = null; }}
-        onWheel={(e) => {
-             e.preventDefault();
-             e.stopPropagation();
-             const s = Math.exp(-e.deltaY * 0.002);
-             setZoom(z => Math.min(Math.max(0.1, z * s), 5));
+        onMouseUp={() => { 
+            if (isDraggingCanvas.current) isDraggingCanvas.current = false; 
+            if (draggingNodeId.current) {
+                onUpdate({ ...data, nodes: localNodes });
+                draggingNodeId.current = null;
+            }
+            if (connectingSourceId) {
+                if (hoveredNodeId && hoveredNodeId !== connectingSourceId) {
+                    const exists = data.edges.some(e => e.from === connectingSourceId && e.to === hoveredNodeId);
+                    if (!exists) {
+                        const newEdge: CanvasEdge = { id: generateId(), from: connectingSourceId, to: hoveredNodeId, color: '#71717a' };
+                        onUpdate({ ...data, edges: [...data.edges, newEdge] });
+                    }
+                }
+                setConnectingSourceId(null);
+                setHoveredNodeId(null);
+            }
         }}
       >
-        <div style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})`, transformOrigin: '0 0', width: '100%', height: '100%' }}>
-            
-            {/* Edges */}
-            <svg className="absolute top-0 left-0 w-full h-full overflow-visible pointer-events-none">
+        <div style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})`, transformOrigin: '0 0' }}>
+            <svg className="absolute top-0 left-0 overflow-visible pointer-events-none">
                 <defs>
                     <marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
-                        <polygon points="0 0, 10 3.5, 0 7" fill="#71717a"/>
+                        <polygon points="0 0, 10 3.5, 0 7" fill="#3f3f46"/>
                     </marker>
                     <marker id="arrow-selected" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
-                        <polygon points="0 0, 10 3.5, 0 7" fill="#ffffff"/>
+                        <polygon points="0 0, 10 3.5, 0 7" fill="#22d3ee"/>
                     </marker>
                 </defs>
                 {data.edges.map(e => {
-                    const n1 = data.nodes.find(n => n.id === e.from);
-                    const n2 = data.nodes.find(n => n.id === e.to);
+                    const n1 = localNodes.find(n => n.id === e.from);
+                    const n2 = localNodes.find(n => n.id === e.to);
                     if (!n1 || !n2) return null;
                     const isSel = selectedId === e.id;
                     return (
                         <path 
                             key={e.id} 
-                            d={getPath(n1.x+NODE_WIDTH, n1.y+NODE_HEIGHT/2, n2.x, n2.y+NODE_HEIGHT/2)} 
-                            stroke={isSel ? '#fff' : (e.color || '#71717a')} 
+                            d={getPath(n1.x + NODE_WIDTH, n1.y + NODE_HEIGHT/2, n2.x, n2.y + NODE_HEIGHT/2)} 
+                            stroke={isSel ? '#22d3ee' : '#3f3f46'} 
                             strokeWidth={isSel ? 3 : 2} 
                             fill="none" 
                             markerEnd={isSel ? "url(#arrow-selected)" : "url(#arrow)"} 
-                            className="interactive pointer-events-auto cursor-pointer transition-colors" 
+                            className="interactive pointer-events-auto cursor-pointer transition-colors hover:stroke-zinc-500" 
                             onClick={(ev) => { ev.stopPropagation(); setSelectedId(e.id); }} 
                         />
                     );
                 })}
-                {mode === 'connect' && connectingSourceId && (() => {
-                    const n1 = data.nodes.find(n => n.id === connectingSourceId);
+                {connectingSourceId && (() => {
+                    const n1 = localNodes.find(n => n.id === connectingSourceId);
+                    const nTarget = localNodes.find(n => n.id === hoveredNodeId);
                     if (!n1) return null;
+                    
+                    // Visual snapping to hovered node input port
+                    const targetX = nTarget ? nTarget.x : mousePos.x;
+                    const targetY = nTarget ? nTarget.y + NODE_HEIGHT / 2 : mousePos.y;
+
                     return (
                          <path 
-                            d={getPath(n1.x+NODE_WIDTH, n1.y+NODE_HEIGHT/2, mousePos.x, mousePos.y)} 
-                            stroke="#fff" 
+                            d={getPath(n1.x + NODE_WIDTH, n1.y + NODE_HEIGHT/2, targetX, targetY)} 
+                            stroke="#22d3ee" 
                             strokeWidth="2" 
-                            strokeDasharray="5,5"
+                            strokeDasharray="6,4"
                             fill="none" 
                         />
                     );
                 })()}
             </svg>
 
-            {/* Nodes */}
-            {data.nodes.map(node => {
+            {localNodes.map(node => {
                 const config = NODE_CONFIG[node.type] || NODE_CONFIG['note'];
                 const Icon = config.icon;
                 const isSel = selectedId === node.id;
-                const isConnecting = connectingSourceId === node.id;
+                const isTargetHovered = hoveredNodeId === node.id && connectingSourceId !== node.id;
+                const nodeColor = node.color || config.color;
+                const secondaryColor = config.secondaryColor;
 
                 return (
                 <div 
                      key={node.id} 
-                     className={`
-                        interactive absolute flex flex-col border backdrop-blur-md rounded-xl overflow-hidden shadow-lg transition-all group/node
-                        ${isSel ? 'shadow-[0_0_20px_rgba(255,255,255,0.1)]' : 'shadow-black/50'}
-                     `}
+                     className={`interactive absolute flex flex-col border backdrop-blur-md rounded-2xl transition-all duration-300 ${isSel ? 'shadow-[0_0_50px_rgba(255,255,255,0.1)] z-20 scale-105' : 'shadow-2xl z-10'} ${isTargetHovered ? 'ring-4 ring-cyan-500/30' : ''}`}
                      style={{ 
-                         left: node.x, 
-                         top: node.y, 
-                         width: NODE_WIDTH, 
-                         minHeight: NODE_HEIGHT, 
-                         height: 'auto',
-                         borderColor: isSel || isConnecting ? '#fff' : (node.color || config.color), 
-                         backgroundColor: '#09090be6', 
-                         borderWidth: isSel ? 2 : 1,
-                         zIndex: isSel ? 10 : 1
+                         left: node.x, top: node.y, width: NODE_WIDTH, minHeight: NODE_HEIGHT,
+                         borderColor: isSel ? '#fff' : isTargetHovered ? '#22d3ee' : nodeColor, 
+                         backgroundColor: '#0c0c0e/95', 
+                         borderWidth: isSel || isTargetHovered ? 2 : 1,
                      }}
+                     onMouseEnter={() => { if (connectingSourceId) setHoveredNodeId(node.id); }}
+                     onMouseLeave={() => { if (connectingSourceId) setHoveredNodeId(null); }}
                      onMouseDown={(e) => { 
                          if(!readOnly && mode !== 'connect'){ 
                              e.stopPropagation(); 
@@ -393,200 +469,133 @@ export const CanvasBoard: React.FC<CanvasBoardProps> = ({ data, onUpdate, onAtta
                              setSelectedId(node.id); 
                          }
                      }}
-                     onClick={(e) => handleNodeClick(e, node.id)}
-                     onDoubleClick={() => !readOnly && setEditingNode(node)}
+                     onDoubleClick={() => setEditingNodeId(node.id)}
                 >
-                    {/* Node Header */}
-                    <div className="h-7 px-2 flex items-center justify-between border-b border-white/5 bg-white/5 cursor-grab active:cursor-grabbing">
-                        <div className="flex items-center gap-1.5">
-                            <Icon className="w-3.5 h-3.5" style={{ color: node.color || config.color }} />
-                            <span className="text-[10px] font-bold uppercase text-zinc-400 tracking-wider">{config.label}</span>
-                        </div>
-                        
-                        <div className="flex items-center gap-1 opacity-0 group-hover/node:opacity-100 transition-opacity">
-                            <button 
-                                onClick={(e) => { 
-                                  e.stopPropagation(); 
-                                  setAttachingNodeId(node.id); 
-                                  fileInputRef.current?.click(); // Trigger local file input
-                                }} 
-                                className="p-1 hover:bg-zinc-700 rounded text-zinc-400 hover:text-white"
-                                title="Attach Image"
-                            >
-                                <ImageIcon className="w-3 h-3"/>
-                            </button>
-                        </div>
-                    </div>
-                    
-                    {/* Node Content */}
-                    <div className="p-3 flex-1 flex flex-col">
-                        <div className="font-bold text-sm text-white mb-1 leading-tight line-clamp-2">{node.label}</div>
-                        <div className="text-[10px] text-zinc-400 line-clamp-3 font-mono leading-relaxed mb-2">{node.content || "Double click to edit..."}</div>
-                        
-                        {/* Attachments Section */}
-                        {node.attachments && node.attachments.length > 0 && (
-                            <div className="mt-auto pt-2 border-t border-white/5 flex flex-col gap-2">
-                                {/* Visual Images */}
-                                <div className="grid grid-cols-2 gap-1.5">
-                                    {node.attachments.filter(a => a.type === 'image').map((att, i) => (
-                                        <div key={i} className="relative aspect-video bg-black rounded overflow-hidden border border-zinc-700 group/img">
-                                            <img src={`data:${att.mime};base64,${att.data}`} className="w-full h-full object-cover" alt="attachment" />
-                                            {!readOnly && (
-                                                <button 
-                                                    onClick={(e) => { e.stopPropagation(); removeAttachment(node.id, att.id); }}
-                                                    className="absolute top-0.5 right-0.5 p-1 bg-black/60 text-white rounded-full opacity-0 group-hover/img:opacity-100 hover:bg-red-500 transition-all"
-                                                >
-                                                    <X className="w-2 h-2"/>
-                                                </button>
-                                            )}
-                                        </div>
-                                    ))}
-                                </div>
-                                {/* Other files (e.g. text/pdf) if any mixed in */}
-                                <div className="flex flex-wrap gap-1.5">
-                                    {node.attachments.filter(a => a.type !== 'image').map((att, i) => (
-                                        <div key={i} className="flex items-center gap-1 pl-1.5 pr-2 py-0.5 bg-zinc-800 rounded border border-zinc-700 max-w-full" title={att.name}>
-                                            <FileText className="w-2.5 h-2.5 text-blue-400 shrink-0"/>
-                                            <span className="text-[9px] text-zinc-300 truncate max-w-[120px]">{att.name}</span>
-                                            {!readOnly && (
-                                              <button onClick={(e) => { e.stopPropagation(); removeAttachment(node.id, att.id); }} className="ml-1 text-zinc-500 hover:text-red-400">
-                                                <X className="w-2 h-2"/>
-                                              </button>
-                                            )}
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
+                    {/* Input Port (Left) */}
+                    <div className="absolute -left-2 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-zinc-900 border-2 border-zinc-700 z-30 group/port">
+                        <div className={`absolute inset-0 rounded-full transition-all ${isTargetHovered ? 'bg-cyan-500 scale-125 shadow-[0_0_10px_rgba(34,211,238,0.5)]' : 'bg-transparent'}`} />
                     </div>
 
-                    {/* Connection Handle (Visual only) */}
-                    <div className={`absolute right-0 top-1/2 -translate-y-1/2 w-1.5 h-8 bg-zinc-800 rounded-l transition-opacity ${isSel ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`} />
+                    {/* Output Port (Right) */}
+                    <div 
+                        className="absolute -right-2 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-zinc-900 border-2 border-zinc-700 z-30 group/port cursor-crosshair hover:border-cyan-500 transition-colors"
+                        onMouseDown={(e) => startConnection(e, node.id)}
+                    >
+                        <div className="absolute inset-0 rounded-full bg-cyan-500 opacity-0 group-hover/port:opacity-100 scale-75 transition-all" />
+                    </div>
+
+                    <div className="h-12 px-3 flex items-center justify-between border-b border-white/5 bg-white/5 rounded-t-2xl">
+                        <div className="flex items-center gap-3">
+                            <div 
+                                className={`w-8 h-8 flex items-center justify-center relative group/icon ${config.shapeClass}`}
+                                style={{ backgroundColor: secondaryColor }}
+                            >
+                                <div 
+                                    className={`absolute inset-0 blur-[6px] opacity-50 ${config.shapeClass}`}
+                                    style={{ backgroundColor: nodeColor }}
+                                />
+                                <Icon 
+                                    className={`${config.iconSize} relative z-10`} 
+                                    style={{ color: nodeColor, fill: nodeColor + '40' }} 
+                                    strokeWidth={2.5}
+                                />
+                            </div>
+                            <span className="text-[10px] font-black uppercase text-zinc-400 tracking-[0.15em]">{config.label}</span>
+                        </div>
+                    </div>
+                    <div className="p-4 flex-1 flex flex-col gap-2">
+                        <h4 className="text-sm font-bold text-white line-clamp-2 leading-snug">{node.label}</h4>
+                        <p className="text-[11px] text-zinc-500 line-clamp-4 leading-relaxed font-medium">{node.content || "Double click to edit content..."}</p>
+                    </div>
                 </div>
-            )})}
+                );
+            })}
         </div>
       </div>
-      
-      {/* --- UI OVERLAYS --- */}
-      
-      {/* 1. Main Toolbar (Bottom Center) */}
-      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-2 p-1.5 bg-zinc-900/90 backdrop-blur-md border border-zinc-700 rounded-xl shadow-2xl interactive z-20 pointer-events-auto">
-         <div className="flex items-center gap-1 pr-2 border-r border-zinc-800">
-             <button onClick={() => addNode('concept')} className="p-2 text-cyan-400 hover:bg-cyan-950/30 rounded-lg transition-colors" title="Add Concept">
-                 <Lightbulb className="w-5 h-5"/>
-             </button>
-             <button onClick={() => addNode('process')} className="p-2 text-purple-400 hover:bg-purple-950/30 rounded-lg transition-colors" title="Add Process">
-                 <Settings2 className="w-5 h-5"/>
-             </button>
-             <button onClick={() => addNode('note')} className="p-2 text-yellow-400 hover:bg-yellow-950/30 rounded-lg transition-colors" title="Add Note">
-                 <StickyNote className="w-5 h-5"/>
-             </button>
-         </div>
 
-         <button 
-            onClick={() => { setMode(mode === 'connect' ? 'select' : 'connect'); setConnectingSourceId(null); }}
-            className={`p-2 rounded-lg transition-colors flex items-center gap-2 ${mode === 'connect' ? 'bg-zinc-100 text-black' : 'text-zinc-400 hover:text-white hover:bg-zinc-800'}`}
-            title="Toggle Connection Mode"
-         >
-             <ArrowRight className="w-5 h-5"/>
-         </button>
+      {activeNode && (
+          <div className="absolute top-0 right-0 h-full w-[360px] bg-[#09090b]/98 backdrop-blur-3xl border-l border-white/10 z-[60] flex flex-col shadow-[0_0_100px_rgba(0,0,0,0.8)] animate-in slide-in-from-right duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]">
+              <div className="p-8 border-b border-white/5 flex items-center justify-between">
+                  <div className="flex items-center gap-4">
+                      <div className="p-2.5 rounded-xl bg-cyan-500/10 border border-cyan-500/20"><Edit3 className="w-5 h-5 text-cyan-400" /></div>
+                      <div>
+                        <h3 className="text-lg font-black tracking-tight text-white">Element Hub</h3>
+                        <p className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Node Identity</p>
+                      </div>
+                  </div>
+                  <button onClick={() => setEditingNodeId(null)} className="p-2.5 hover:bg-zinc-800 rounded-xl transition-all text-zinc-500 hover:text-white"><X className="w-5 h-5"/></button>
+              </div>
+              
+              <div className="flex-1 overflow-y-auto p-8 space-y-10 custom-scrollbar">
+                  <div className="space-y-3">
+                      <label className="text-[10px] font-black text-zinc-500 uppercase tracking-[0.2em] px-1">Display Title</label>
+                      <input 
+                          autoFocus
+                          value={activeNode.label} 
+                          onChange={(e) => {
+                              const newNodes = localNodes.map(n => n.id === activeNode.id ? {...n, label: e.target.value} : n);
+                              onUpdate({...data, nodes: newNodes});
+                          }}
+                          className="w-full bg-zinc-950/50 border border-zinc-800 rounded-xl p-4 text-sm font-medium focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/20 focus:outline-none transition-all placeholder:text-zinc-700" 
+                          placeholder="e.g. Core Hypothesis"
+                      />
+                  </div>
+                  
+                  <div className="space-y-3">
+                      <label className="text-[10px] font-black text-zinc-500 uppercase tracking-[0.2em] px-1">Description / Notes</label>
+                      <textarea 
+                          rows={8}
+                          value={activeNode.content} 
+                          onChange={(e) => {
+                              const newNodes = localNodes.map(n => n.id === activeNode.id ? {...n, content: e.target.value} : n);
+                              onUpdate({...data, nodes: newNodes});
+                          }}
+                          className="w-full bg-zinc-950/50 border border-zinc-800 rounded-xl p-4 text-sm font-medium resize-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/20 focus:outline-none transition-all leading-relaxed placeholder:text-zinc-700" 
+                          placeholder="Deep dive into the details here..."
+                      />
+                  </div>
+                  
+                  <div className="space-y-4">
+                      <label className="text-[10px] font-black text-zinc-500 uppercase tracking-[0.2em] px-1 text-center block">Neural Core Color</label>
+                      <div className="flex justify-center gap-3">
+                          {['#06b6d4', '#a855f7', '#eab308', '#ef4444', '#10b981', '#71717a'].map(c => (
+                              <button 
+                                  key={c} 
+                                  onClick={() => {
+                                      const newNodes = localNodes.map(n => n.id === activeNode.id ? {...n, color: c} : n);
+                                      onUpdate({...data, nodes: newNodes});
+                                  }}
+                                  className={`w-9 h-9 rounded-full border-2 transition-all hover:scale-110 active:scale-90 flex items-center justify-center ${activeNode.color === c ? 'border-white ring-4 ring-white/10' : 'border-transparent opacity-60 hover:opacity-100'}`} 
+                                  style={{ backgroundColor: c }}
+                              >
+                                {activeNode.color === c && <div className="w-1.5 h-1.5 bg-white rounded-full" />}
+                              </button>
+                          ))}
+                      </div>
+                  </div>
+              </div>
 
-         <div className="w-px h-6 bg-zinc-800 mx-1"/>
-
-         <button onClick={runAutoLayout} className="p-2 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-lg transition-colors" title="Auto Layout (Hierarchical)">
-             <LayoutIcon className="w-5 h-5"/>
-         </button>
-      </div>
-
-      {/* 2. Zoom Controls (Bottom Right) */}
-      <div className="absolute bottom-6 right-6 flex flex-col gap-1 interactive z-20 pointer-events-auto">
-         <div className="flex flex-col bg-[#09090b] rounded-lg border border-zinc-800 overflow-hidden shadow-xl">
-             <button onClick={() => setZoom(z => Math.min(z + 0.1, 5))} className="p-2 text-zinc-400 hover:text-white hover:bg-zinc-800"><Plus className="w-4 h-4"/></button>
-             <div className="h-px bg-zinc-800 w-full"/>
-             <button onClick={() => setZoom(z => Math.max(0.1, z - 0.1))} className="p-2 text-zinc-400 hover:text-white hover:bg-zinc-800"><Minus className="w-4 h-4"/></button>
-         </div>
-         <button onClick={() => { setZoom(1); setOffset({x:0,y:0}); }} className="p-2 bg-[#09090b] text-zinc-400 hover:text-white border border-zinc-800 rounded-lg shadow-xl"><Maximize className="w-4 h-4"/></button>
-      </div>
-
-      {/* 3. Selection Actions (Top Left when selected) */}
-      {selectedId && !readOnly && (
-          <div className="absolute top-6 left-6 flex items-center gap-2 p-1.5 bg-[#09090b] border border-zinc-800 rounded-lg shadow-xl interactive animate-in fade-in slide-in-from-top-2 z-20 pointer-events-auto">
-              <span className="text-[10px] uppercase font-bold text-zinc-500 px-2">Selected</span>
-              <div className="w-px h-4 bg-zinc-800"/>
-              {editingNode && editingNode.id === selectedId ? (
-                   <span className="text-xs text-zinc-300 px-2">Editing...</span>
-              ) : (
-                  <>
-                    <button onClick={() => { const n = data.nodes.find(x=>x.id===selectedId); if(n) setEditingNode(n); }} className="p-1.5 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded"><Edit3 className="w-4 h-4"/></button>
-                    {data.nodes.find(n=>n.id===selectedId) && (
-                        <button onClick={() => { setMode('connect'); setConnectingSourceId(selectedId); }} className="p-1.5 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded"><ArrowRight className="w-4 h-4"/></button>
-                    )}
-                    <button onClick={deleteSelected} className="p-1.5 text-red-400 hover:text-red-300 hover:bg-red-950/30 rounded"><Trash2 className="w-4 h-4"/></button>
-                  </>
-              )}
-          </div>
-      )}
-
-      {/* 4. Edit Modal */}
-      {editingNode && (
-          <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 interactive pointer-events-auto">
-             <div className="w-full max-w-md bg-[#09090b] border border-zinc-800 rounded-xl p-6 space-y-4 shadow-2xl animate-in zoom-in-95">
-                 <div className="flex items-center justify-between">
-                    <h3 className="text-white font-bold text-lg flex items-center gap-2">
-                        <Edit3 className="w-4 h-4 text-cyan-500"/> Edit Node
-                    </h3>
-                    <button onClick={() => setEditingNode(null)} className="text-zinc-500 hover:text-white"><X className="w-5 h-5"/></button>
-                 </div>
-                 
-                 <div className="space-y-3">
-                     <div>
-                        <label className="text-xs text-zinc-500 font-bold uppercase block mb-1">Label</label>
-                        <input 
-                            value={editingNode.label} 
-                            onChange={e => setEditingNode({...editingNode, label: e.target.value})} 
-                            className="w-full bg-zinc-900 border border-zinc-800 p-2 rounded-lg text-sm text-white focus:outline-none focus:border-cyan-500 transition-colors"
-                            placeholder="Node Title"
-                            autoFocus
-                        />
-                     </div>
-                     <div>
-                        <label className="text-xs text-zinc-500 font-bold uppercase block mb-1">Details</label>
-                        <textarea 
-                            value={editingNode.content||''} 
-                            onChange={e => setEditingNode({...editingNode, content: e.target.value})} 
-                            className="w-full h-32 bg-zinc-900 border border-zinc-800 p-2 rounded-lg text-xs text-zinc-300 focus:outline-none focus:border-cyan-500 transition-colors resize-none"
-                            placeholder="Add detailed notes here..."
-                        />
-                     </div>
-                     
-                     <div className="flex gap-2 pt-2">
-                        {['concept', 'process', 'note'].map(t => (
-                            <button 
-                                key={t}
-                                onClick={() => setEditingNode({...editingNode, type: t as any, color: NODE_CONFIG[t].color})}
-                                className={`flex-1 py-2 rounded-lg border text-xs font-bold uppercase transition-all flex items-center justify-center gap-2 ${editingNode.type === t ? 'bg-zinc-800 border-white text-white' : 'bg-transparent border-zinc-800 text-zinc-500 hover:bg-zinc-900'}`}
-                            >
-                                {t}
-                            </button>
-                        ))}
-                     </div>
-                 </div>
-
-                 <div className="flex justify-end gap-3 pt-4 border-t border-zinc-800">
-                     <button onClick={() => setEditingNode(null)} className="px-4 py-2 text-zinc-400 text-xs font-bold uppercase hover:text-white">Cancel</button>
-                     <button 
-                        onClick={() => { 
-                            onUpdate({...data, nodes: data.nodes.map(n => n.id===editingNode.id?editingNode:n)}); 
-                            setEditingNode(null); 
-                        }} 
-                        className="px-6 py-2 bg-white text-black rounded-lg text-xs font-bold uppercase hover:bg-zinc-200"
-                     >
-                        Save Changes
-                     </button>
-                 </div>
-             </div>
+              <div className="p-8 border-t border-white/5 bg-black/20">
+                   <button onClick={deleteSelected} className="group w-full py-4 bg-red-500/5 hover:bg-red-500 text-red-500 hover:text-white border border-red-500/20 rounded-2xl text-[11px] font-black uppercase tracking-[0.2em] transition-all flex items-center justify-center gap-3">
+                       <Trash2 className="w-4 h-4" /> Discard Element
+                   </button>
+              </div>
           </div>
       )}
     </div>
   );
 };
+
+const ToolbarButton: React.FC<{ icon: any, label: string, onClick: () => void, active?: boolean, disabled?: boolean, color?: string }> = ({ icon: Icon, label, onClick, active, disabled, color }) => (
+    <button 
+        onClick={onClick} 
+        disabled={disabled}
+        className={`w-11 h-11 rounded-xl transition-all active:scale-95 flex items-center justify-center group flex-shrink-0
+            ${active ? 'bg-cyan-500 text-black shadow-[0_0_20px_rgba(6,182,212,0.3)]' : 'hover:bg-white/5 text-zinc-400'}
+            ${disabled ? 'opacity-20 cursor-not-allowed' : ''}
+        `}
+        title={label}
+    >
+        <Icon className={`w-5 h-5 transition-transform group-hover:scale-110 shrink-0 ${active ? 'text-black' : (color || 'text-zinc-400')}`} />
+    </button>
+);
