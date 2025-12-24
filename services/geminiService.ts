@@ -1,5 +1,5 @@
 
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Modality } from "@google/genai";
 
 // Helper to get a fresh client instance with the latest API Key
 const getAiClient = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -24,7 +24,70 @@ async function retryOperation<T>(operation: () => Promise<T>, maxRetries = 3): P
   throw lastError;
 }
 
-// Export raw helpers for legacy/direct usage if needed, but mostly used by Agent tools now
+/**
+ * Transcribes audio bytes using Gemini's multimodal capabilities with context awareness.
+ * @param base64Data The raw audio data
+ * @param mimeType The audio mime type
+ * @param context Optional text context (e.g. current draft, chat history) to help resolve technical terms
+ */
+export const transcribeAudio = async (base64Data: string, mimeType: string, context: string = "") => {
+  return retryOperation(async () => {
+    const ai = getAiClient();
+    
+    // Construct a context-aware prompt with stronger instructions for technical accuracy
+    const prompt = `
+      You are an expert transcriber assisting with a technical research project.
+      
+      Task: Transcribe the spoken words in this audio exactly.
+      
+      ${context ? `### RELEVANT PROJECT CONTEXT\nThe following text contains technical terms, acronyms, and names likely to appear in the audio:\n"""\n${context}\n"""\n` : ''}
+      
+      ### TRANSCRIPTION RULES:
+      1. **Terminology**: Prioritize spellings found in the CONTEXT for any ambiguous terms or homophones (e.g., "Bohrium" vs "boring", "React" vs "react").
+      2. **Output**: Return ONLY the transcribed text. Do not add "Transcribed text:" or timestamps.
+      3. **Noise**: If the audio contains only silence or background noise, return an empty string.
+      4. **Language**: Detect the language automatically and transcribe as-is.
+      5. **Punctuation**: Add natural punctuation (periods, commas) for readability.
+    `;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: {
+        parts: [
+          { inlineData: { data: base64Data, mimeType: mimeType } },
+          { text: prompt }
+        ]
+      }
+    });
+    return response.text?.trim() || "";
+  });
+};
+
+/**
+ * Generates speech from text using the TTS model
+ */
+export const generateSpeech = async (text: string) => {
+  return retryOperation(async () => {
+    const ai = getAiClient();
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash-preview-tts",
+      contents: [{ parts: [{ text: text }] }],
+      config: {
+        responseModalities: [Modality.AUDIO],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName: 'Zephyr' },
+          },
+        },
+      },
+    });
+
+    const audioData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+    if (!audioData) throw new Error("No speech audio data received.");
+    return audioData;
+  });
+};
+
 export const performWebSearch = async (query: string) => {
   return retryOperation(async () => {
     const ai = getAiClient();
@@ -55,7 +118,6 @@ export const performDeepReasoning = async (problem: string) => {
 export const analyzeImage = async (base64: string, mime: string, prompt: string) => {
   return retryOperation(async () => {
     const ai = getAiClient();
-    // Use the recommended gemini-3-flash-preview for multimodal tasks
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents: {
@@ -69,14 +131,6 @@ export const analyzeImage = async (base64: string, mime: string, prompt: string)
   });
 };
 
-export const getLiveClient = () => {
-  const ai = getAiClient();
-  return ai.live;
-}
-
-/**
- * Generate actual image using Gemini 2.5 Flash Image (Nano Banana)
- */
 export const generateImageFlash = async (prompt: string) => {
   return retryOperation(async () => {
     const ai = getAiClient();
@@ -84,11 +138,10 @@ export const generateImageFlash = async (prompt: string) => {
       model: 'gemini-2.5-flash-image',
       contents: { parts: [{ text: prompt }] },
       config: {
-        imageConfig: { aspectRatio: '1:1' } // Default square
+        imageConfig: { aspectRatio: '1:1' }
       }
     });
     
-    // Iterate through parts to find the image
     if (response.candidates?.[0]?.content?.parts) {
       for (const part of response.candidates[0].content.parts) {
         if (part.inlineData && part.inlineData.data) {
@@ -96,13 +149,10 @@ export const generateImageFlash = async (prompt: string) => {
         }
       }
     }
-    throw new Error("No image data received from Gemini Flash.");
+    throw new Error("No image data received.");
   });
 };
 
-/**
- * Generate actual image using Imagen 3 (Imagen 4.0 Generate)
- */
 export const generateImageImagen = async (prompt: string) => {
   return retryOperation(async () => {
     const ai = getAiClient();
@@ -120,52 +170,22 @@ export const generateImageImagen = async (prompt: string) => {
     if (img && img.imageBytes) {
       return { base64: img.imageBytes, mimeType: 'image/png' };
     }
-    throw new Error("No image data received from Imagen.");
+    throw new Error("No image data received.");
   });
 };
 
-/**
- * Generate EXPERT PROMPTS for tools like Midjourney, DALL-E 3, or Gemini Advanced.
- */
 export const generateCreativePrompt = async (userConcept: string) => {
   return retryOperation(async () => {
     const ai = getAiClient();
-    
     const response = await ai.models.generateContent({
-      model: "gemini-3-pro-preview", // Use the smartest model for prompt engineering
+      model: "gemini-3-pro-preview",
       config: {
         temperature: 0.8,
-        systemInstruction: `You are a world-class Prompt Engineer specialized in Generative Art.
-        Your task is to take a simple user concept and convert it into highly detailed, technical image generation prompts.
-        
-        Output Format (Markdown):
-        
-        ### 🎨 Midjourney v6
-        \`[The Prompt]\`
-        
-        ### 🌌 DALL-E 3
-        \`[The Prompt]\`
-        
-        Do not explain. Just provide prompts.`
+        systemInstruction: `You are a world-class Prompt Engineer. Convert user concepts into detailed prompts.`
       },
       contents: { parts: [{ text: `User Concept: ${userConcept}` }] },
     });
-
     return response.text || "Could not generate prompts.";
-  });
-};
-
-export const refinePrompt = async (originalPrompt: string) => {
-  return retryOperation(async () => {
-    const ai = getAiClient();
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      config: {
-        systemInstruction: `Refine this prompt for clarity and intent preservation.`,
-      },
-      contents: { parts: [{ text: originalPrompt }] },
-    });
-    return response.text?.trim() || originalPrompt;
   });
 };
 
@@ -174,14 +194,7 @@ export const generateCitations = async (text: string, sources: string[], style: 
     const ai = getAiClient();
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: { parts: [{ text: `
-        Task: Add inline citations [Author, Year].
-        Sources:
-        ${sources.length > 0 ? sources.join('\n') : "None."}
-        
-        Text:
-        ${text}
-      ` }] },
+      contents: { parts: [{ text: `Task: Add inline citations. Style: ${style}. Sources: ${sources.join(', ')}. Text: ${text}` }] },
     });
     return response.text || text;
   });

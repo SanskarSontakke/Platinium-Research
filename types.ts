@@ -28,6 +28,8 @@ export interface AppSettings {
   confirmAutoWrite: boolean;
   confirmCanvas: boolean;
   confirmImageGen: boolean;
+  chatContextSize?: number;
+  streamResponses?: boolean;
 }
 
 export interface ResearchPaper {
@@ -82,6 +84,7 @@ export interface ProjectMetaData {
   settings?: AppSettings;
   sources?: string[]; // List of URLs or citations
   chatHistory?: ChatMessage[];
+  searchHistory?: string[];
 }
 
 export interface ProjectData {

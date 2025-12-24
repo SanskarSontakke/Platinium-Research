@@ -58,7 +58,6 @@
     }
 
     /* CRITICAL FIX: Markdown Editor Cursor Alignment */
-    /* Strict font and layout synchronization for react-simple-code-editor */
     .prism-editor textarea,
     .prism-editor pre {
       font-family: 'Fira Code', 'Fira Mono', monospace !important;
@@ -81,7 +80,6 @@
       z-index: 1 !important;
     }
 
-    /* Typography Polish */
     .prose {
         max-width: 800px !important;
     }
@@ -94,7 +92,6 @@
         color: #d4d4d8;
     }
 
-    /* Custom Animations */
     @keyframes fade-in-up {
       from { opacity: 0; transform: translateY(8px); }
       to { opacity: 1; transform: translateY(0); }
@@ -111,7 +108,6 @@
       animation: fade-in 0.3s ease-out forwards;
     }
 
-    /* Glassmorphism effects */
     .glass {
       background: rgba(18, 18, 20, 0.7);
       backdrop-filter: blur(12px);
@@ -126,9 +122,14 @@
       transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     }
 
-    /* Selection Highlight */
     ::selection {
       background: rgba(34, 211, 238, 0.2);
+    }
+
+    /* Excel-style table inputs */
+    .excel-cell:focus-within {
+      outline: 2px solid #22d3ee;
+      z-index: 10;
     }
   </style>
 
@@ -163,7 +164,8 @@
     "react-dom": "https://esm.sh/react-dom@^19.2.3",
     "remark-gfm": "https://esm.sh/remark-gfm@^4.0.1",
     "react-simple-code-editor": "https://esm.sh/react-simple-code-editor@^0.14.1",
-    "marked": "https://esm.sh/marked@^17.0.1"
+    "marked": "https://esm.sh/marked@^17.0.1",
+    "xlsx": "https://esm.sh/xlsx@^0.18.5"
   }
 }
 </script>

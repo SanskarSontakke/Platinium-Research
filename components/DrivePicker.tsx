@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { X, Search, Folder, FileText, Image as ImageIcon, ChevronRight, UploadCloud, Grid, List, CheckCircle2, HardDrive, Loader2, File, AlertTriangle, RefreshCw, Key, ExternalLink, LogOut, FolderPlus, ArrowRight, CornerDownRight } from 'lucide-react';
+import { X, Search, Folder, FileText, Image as ImageIcon, ChevronRight, CloudUpload, Grid, List, CircleCheck, HardDrive, Loader2, File, AlertTriangle, RefreshCw, Key, ExternalLink, LogOut, FolderPlus, ArrowRight, CornerDownRight } from 'lucide-react';
 import { Attachment } from '../types';
 import { STORAGE_KEY, PLAYGROUND_URL } from '../config';
 
@@ -487,7 +487,7 @@ export const DrivePicker: React.FC<DrivePickerProps> = ({
                         disabled={selectedFileIds.size === 0 || downloading}
                         className={`px-6 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all flex items-center gap-2 ${selectedFileIds.size > 0 ? 'bg-white text-black hover:bg-zinc-200' : 'bg-zinc-800 text-zinc-600'}`}
                     >
-                        {downloading ? <Loader2 className="w-4 h-4 animate-spin"/> : <UploadCloud className="w-4 h-4"/>}
+                        {downloading ? <Loader2 className="w-4 h-4 animate-spin"/> : <CloudUpload className="w-4 h-4"/>}
                         {downloading ? 'Downloading...' : 'Import Selected'}
                     </button>
                 )}

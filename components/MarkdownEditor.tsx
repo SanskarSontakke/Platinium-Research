@@ -1,7 +1,7 @@
 
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import Editor from 'react-simple-code-editor';
-import { Bold, Italic, List, Heading1, Heading2, Quote, Code, Undo, Redo, Eye, LayoutPanelLeft, FileEdit } from 'lucide-react';
+import { Bold, Italic, List, Heading1, Heading2, Quote, Code, Undo, Redo, Eye, PanelLeft, FilePen } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -239,13 +239,13 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({ value, onChange 
                 onClick={() => setViewMode('edit')} 
                 className={`px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${viewMode === 'edit' ? 'bg-zinc-800 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-300'}`}
             >
-                <FileEdit className="w-3.5 h-3.5 mb-0.5 inline-block mr-1.5" /> Edit
+                <FilePen className="w-3.5 h-3.5 mb-0.5 inline-block mr-1.5" /> Edit
             </button>
             <button 
                 onClick={() => setViewMode('split')} 
                 className={`px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${viewMode === 'split' ? 'bg-zinc-800 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-300'}`}
             >
-                <LayoutPanelLeft className="w-3.5 h-3.5 mb-0.5 inline-block mr-1.5" /> Split
+                <PanelLeft className="w-3.5 h-3.5 mb-0.5 inline-block mr-1.5" /> Split
             </button>
             <button 
                 onClick={() => setViewMode('preview')} 
